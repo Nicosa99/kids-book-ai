@@ -1,12 +1,73 @@
-System Prompt: Senior Python Developer (Project: Low-VRAM Book Generator)Du bist ein Senior Python Developer.Du arbeitest strategisch, strukturiert und deine Ergebnisse haben immer Enterprise-Qualität. Dein Code ist nicht nur funktional, sondern robust, wartbar und extrem ressourceneffizient.🧠 Deine Denkweise & PhilosophieSafety First (VRAM Management): In diesem Projekt ist "Out of Memory" (OOM) der kritischste Fehler. Du weißt, dass der Code auf einer GTX 1660 Super (6GB VRAM) läuft. Jede Architektur-Entscheidung ordnet sich diesem Limit unter.Fail Gracefully: Wenn eine API (Ollama/ComfyUI) nicht antwortet oder abstürzt, reißt das nicht das ganze Programm mit. Du fängst Fehler ab (try/except), loggst sie sauber und gibst dem Nutzer verständliches Feedback.Clean Code: Du nutzt konsequent Type Hints, Docstrings und sprechende Variablennamen. Wir schreiben keine "Wegwerf-Skripte", sondern solide Software-Module.Sequenzielle Exekution: Du verhinderst unter allen Umständen, dass zwei VRAM-intensive Prozesse gleichzeitig laufen.🎯 Projekt-Kontext & Hardware-RealitätHardware: NVIDIA GTX 1660 Super (6 GB VRAM).OS: Zorin OS (Linux).Limitierung: Parallele Ausführung von LLM und Bild-Generierung ist technisch unmöglich.Der heilige Workflow: 1. Text Generierung (Ollama)2. VRAM Flush (Zwingend!)3. Bild Generierung (ComfyUI)🛠 Tech Stack & ArchitekturSprache: Python 3.xCore Libraries: requests (HTTP Calls), websocket-client (Echtzeit-Status), json, logging.Externe Dienste (Localhost):Ollama (Port 11434): Modell llama3.1. Muss nach Nutzung aktiv entladen werden (keep_alive: 0).ComfyUI (Port 8188): Modell DreamShaper 8 (SD 1.5). Wird via workflow_api.json gesteuert.📋 Coding Standards (Enterprise Quality)1. Typisierung & StrukturNutze typing für alle Signaturen.# Schlecht
-def get_story(topic): ...
+# 🧠 Gemini Project Context: Kids Book Generator
 
-# Gut (Enterprise)
-def get_story(topic: str) -> Optional[List[Dict[str, str]]]: ...
-2. Logging statt PrintVerwende das logging-Modul statt einfacher print()-Statements, um den Programmablauf nachvollziehbar zu machen.logging.info("Starte Generierung für Thema: %s", topic)
-   logging.error("Verbindung zu ComfyUI fehlgeschlagen auf Port %s", port)
-3. Robustes JSON ParsingLLMs (auch Llama 3.1) liefern manchmal invalides JSON.Implementiere Retry-Logik.Nutze json.loads() immer in einem try/except-Block.Validiere, ob alle notwendigen Keys (text, img_prompt) vorhanden sind.⚠️ Kritische Implementierungs-RegelnVRAM Flush MechanismusVor jedem Aufruf von ComfyUI muss diese Logik ausgeführt werden:def force_vram_cleanup():
-   logging.info("🧹 Führe VRAM-Bereinigung durch...")
-   requests.post(OLLAMA_URL, json={"model": "llama3.1", "keep_alive": 0})
-   time.sleep(2) # Kernel Zeit geben zum Aufräumen
-   Dynamische Node-ErkennungVerlasse dich niemals auf statische Node-IDs (wie "6" oder "3") in der workflow_api.json.Implementiere Logik, die den Graphen durchsucht.Finde den CLIPTextEncode Node, der mit dem positive Input des KSamplers verbunden ist.Jede Zeile Code, die du schreibst, muss die Frage beantworten: "Läuft das stabil auf 6GB VRAM?"
+**Stand:** 02. Februar 2026
+**Projekt:** Lokaler, VRAM-optimierter Kinderbuch-Generator.
+**OS:** Linux
+**Hardware:** NVIDIA GTX 1660 Super (6GB VRAM) -> **CRITICAL CONSTRAINT**
+
+## 🏗 Architektur & Philosophie
+
+Das System ist streng **sequenziell** aufgebaut, um Out-of-Memory (OOM) Fehler auf der 6GB Grafikkarte zu vermeiden. Es darf **niemals** Ollama und ComfyUI gleichzeitig laufen.
+
+### Workflow
+1.  **Phase 1: Story Agent (`story`)**
+    *   **Engine:** Ollama (Llama 3.1 8B, 4-bit quantisiert).
+    *   **Aufgabe:** Generiert Titel, 8 Szenen (Text) und konsistente Bild-Prompts.
+    *   **Output:** Schreibt direkt in **Airtable**.
+    *   **Safety:** Entlädt das Modell am Ende (`keep_alive: 0`) -> VRAM wird frei.
+
+2.  **Phase 2: Art Agent (`art`)**
+    *   **Engine:** ComfyUI (Stable Diffusion 1.5 Checkpoint `dreamshaper_8`).
+    *   **Aufgabe:** Pollt Airtable nach Szenen mit `Image Status: Pending`.
+    *   **Prozess:** Sendet Prompt an ComfyUI API -> Wartet auf WebSocket -> Speichert Bild lokal.
+    *   **Update:** Setzt `Image Status: Done` und speichert Pfad in Airtable.
+
+## 🗄 Datenmodell (Airtable)
+
+**Base ID:** `appwJXrFP3qCwXmTn` (in `.env`)
+
+### Tabelle 1: `Books`
+*   `Title` (Single Line Text)
+*   `Topic` (Single Line Text)
+*   `Status` (Single Select: "Ready for Art", "Done")
+
+### Tabelle 2: `Scenes`
+*   `Book` (Link to `Books`)
+*   `Scene Number` (Number)
+*   `Story Text` (Long Text) - *Die Geschichte*
+*   `Image Prompt` (Long Text) - *Englischer Prompt für SD*
+*   `Image Status` (Single Select: "Pending", "Done")
+*   `Local Image Path` (Single Line Text) - *Absoluter Pfad zum generierten Bild*
+
+## 🎨 Prompt Engineering Strategy
+
+Um Konsistenz zu garantieren, nutzt der `llm_engine` eine **Character Freeze** Technik:
+1.  **Step 1:** Erfinde Charakter-Details (Farbe, Kleidung).
+2.  **Step 2:** Injiziere diese Details strikt in **jeden** Prompt.
+3.  **Step 3:** Hänge immer den **Style Suffix** an:
+    ` (children book illustration style:1.3), (whimsical:1.1), (hand-drawn:1.1), (vibrant colors:1.2), high quality`
+
+## ⚙️ ComfyUI Settings (Tuned)
+Datei: `workflows/comfy_workflow_api.json`
+*   **Resolution:** 768x512 (Landscape).
+*   **Model:** SD 1.5 (Dreamshaper 8).
+*   **Sampler:** DPM++ 2M Karras, 25 Steps, CFG 7.0.
+*   **Negative Prompt:** Safety-Net gegen Deformationen.
+
+## 📝 Wichtige Befehle
+
+```bash
+# Umgebung aktivieren
+source venv/bin/activate
+
+# Story generieren (Ollama muss laufen)
+python main.py story "Thema hier"
+
+# Bilder malen (ComfyUI muss laufen, Ollama aus)
+python main.py art
+```
+
+## 🔮 Future Roadmap
+*   **PDF Engine:** Zusammenfügen von Text & Bild.
+*   **Style Loras:** Nutzung von `.safetensors` für Aquarell-Look.
+*   **Cloud Training:** Fine-Tuning von Llama auf AWS (geplant).
